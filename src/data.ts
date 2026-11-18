@@ -1,4 +1,4 @@
-import type { Alert, Measurement, Notice, Refuge, Sensor, Threshold, User, Zone } from './types'
+import type { Alert, AlertChange, AlertStatus, Measurement, Notice, Refuge, Sensor, Threshold, User, Zone } from './types'
 
 export const usersSeed: User[] = [
   { id: 1, username: 'martin', name: 'Martín Gómez', email: 'mgomez@municipio.gob.ar', role: 'ADMINISTRADOR', active: true },
@@ -23,26 +23,42 @@ export const zonesSeed: Zone[] = [
 ]
 
 const types = ['Pluviómetro', 'Nivel de agua', 'Humedad']
+
+// Lectura normal según el tipo de sensor (por debajo de los umbrales)
+export function normalValue(type: string, seed: number): number {
+  if (type === 'Nivel de agua') return Number((0.3 + ((seed * 7) % 15) / 10).toFixed(1))
+  if (type === 'Humedad') return 45 + ((seed * 7) % 36)
+  return 8 + ((seed * 7) % 25)
+}
+
 export const sensorsSeed: Sensor[] = Array.from({ length: 42 }, (_, index) => {
   const id = index + 1
   const status = id === 39 ? 'Desconectado' : id === 40 ? 'Desconectado' : id === 41 ? 'En mantenimiento' : id === 42 ? 'Inactivo' : 'Activo'
-  const explicitCodes: Record<number, string> = { 1: 'S-1047', 4: 'S-1042', 7: 'S-2210', 10: 'S-3105', 12: 'S-4012', 15: 'S-1044', 39: 'S-6007', 40: 'S-4016', 41: 'S-3110', 42: 'S-7002' }
+  const explicitCodes: Record<number, string> = { 1: 'S-1047', 4: 'S-1042', 7: 'S-2210', 10: 'S-3105', 12: 'S-4012', 15: 'S-1044', 30: 'S-2230', 39: 'S-6007', 40: 'S-4016', 41: 'S-3110', 42: 'S-7002' }
+  const type = types[index % types.length]
+  // Un sensor asociado se ubica dentro del círculo de su zona (al 55 % del radio)
+  const zone = zonesSeed.find(z => z.sensorIds.includes(id))
+  const angle = index * 2.4
+  const distance = zone ? (zone.diameter / 2) * 0.55 : 0
+  const lat = zone ? zone.lat + (distance * Math.cos(angle)) / 111320 : -34.87 - (index % 7) * 0.015 - Math.floor(index / 14) * 0.004
+  const lng = zone ? zone.lng + (distance * Math.sin(angle)) / (111320 * Math.cos((zone.lat * Math.PI) / 180)) : -58.045 + (index % 11) * 0.014
   return {
     id,
     code: explicitCodes[id] ?? `S-${String(1100 + id * 37)}`,
-    type: types[index % types.length],
+    type,
     status,
-    lat: -34.87 - (index % 7) * 0.015 - Math.floor(index / 14) * 0.004,
-    lng: -58.045 + (index % 11) * 0.014,
-    lastValue: 18 + (index * 7) % 34,
-    unit: index % 3 === 0 ? 'mm/h' : index % 3 === 1 ? 'm' : '%',
+    lat: Number(lat.toFixed(6)),
+    lng: Number(lng.toFixed(6)),
+    lastValue: normalValue(type, index),
+    unit: type === 'Pluviómetro' ? 'mm/h' : type === 'Nivel de agua' ? 'm' : '%',
     lastReport: status === 'Activo' ? `01:${String(42 - (index % 10)).padStart(2, '0')}` : status === 'Desconectado' ? '00:58' : 'Ayer',
   } as Sensor
 })
 
 export const thresholdsSeed: Threshold[] = zonesSeed.flatMap((zone, index) => [
-  { id: index * 2 + 1, zoneId: zone.id, sensorType: 'Pluviómetro', max: 35 + (index % 3) * 5, unit: 'mm/h' },
-  { id: index * 2 + 2, zoneId: zone.id, sensorType: 'Nivel de agua', min: 0.2, max: 1.8 + (index % 2) * 0.2, unit: 'm' },
+  { id: index * 3 + 1, zoneId: zone.id, sensorType: 'Pluviómetro', max: 35 + (index % 3) * 5, unit: 'mm/h' },
+  { id: index * 3 + 2, zoneId: zone.id, sensorType: 'Nivel de agua', min: 0.2, max: 1.8 + (index % 2) * 0.2, unit: 'm' },
+  { id: index * 3 + 3, zoneId: zone.id, sensorType: 'Humedad', min: 20, max: 85, unit: '%' },
 ])
 
 export const refugesSeed: Refuge[] = [
@@ -57,31 +73,103 @@ export const refugesSeed: Refuge[] = [
   { id: 9, name: 'Club Berisso Oeste', description: 'Punto informativo.', address: 'Av. Montevideo y 40', lat: -34.924, lng: -57.89 },
 ]
 
-export const measurementsSeed: Measurement[] = Array.from({ length: 80 }, (_, index) => {
-  const sensorId = (index % 38) + 1
-  const zone = zonesSeed.find(z => z.sensorIds.includes(sensorId)) ?? zonesSeed[index % zonesSeed.length]
-  const value = 18 + (index * 7) % 35
-  return { id: index + 1, sensorId, zoneId: zone.id, value, unit: 'mm/h', dateTime: `2026-10-${String(27 - Math.floor(index / 12)).padStart(2, '0')}T01:${String(42 - (index % 40)).padStart(2, '0')}:00`, origin: index % 7 === 0 ? 'Manual' : 'Automática', exceeded: value > 35 }
+// ---------- Ayudas para que mediciones y alertas sean coherentes ----------
+const thresholdFor = (zoneId: number, sensorType: string) => thresholdsSeed.find(t => t.zoneId === zoneId && t.sensorType === sensorType)
+const isExceeded = (zoneId: number, sensorType: string, value: number) => {
+  const t = thresholdFor(zoneId, sensorType)
+  return Boolean(t && ((t.max !== undefined && value > t.max) || (t.min !== undefined && value < t.min)))
+}
+const sensorById = (id: number) => sensorsSeed.find(s => s.id === id)!
+const zoneOfSensor = (id: number) => zonesSeed.find(z => z.sensorIds.includes(id))!
+const atTime = (date: string, minutes: number) => `${date}T${String(Math.floor(minutes / 60)).padStart(2, '0')}:${String(minutes % 60).padStart(2, '0')}:00`
+
+// Cada alerta nace de una medición del mismo sensor y de la misma zona, que supera su umbral
+const alertPlan = Array.from({ length: 42 }, (_, index) => {
+  const zone = zonesSeed[index % zonesSeed.length]
+  const sensor = sensorById(zone.sensorIds[index % zone.sensorIds.length])
+  const date = `2026-10-${String(27 - Math.floor(index / 8)).padStart(2, '0')}`
+  const minutes = 91 + (index % 12) // 01:31 a 01:42
+  const t = thresholdFor(zone.id, sensor.type)!
+  const value = index === 0 ? 52
+    : sensor.type === 'Nivel de agua' ? Number(((t.max ?? 1.8) + 0.1 + (index % 5) * 0.1).toFixed(2))
+    : (t.max ?? 35) + 2 + ((index * 3) % 14)
+  return { index, zone, sensor, date, minutes, value, manual: index % 7 === 3 }
 })
 
-export const alertsSeed: Alert[] = Array.from({ length: 42 }, (_, index) => {
-  const active = index < 5
-  const zone = zonesSeed[index % zonesSeed.length]
-  const sensorId = zone.sensorIds[index % zone.sensorIds.length]
-  const status: Alert['status'] = active ? (index === 1 ? 'En análisis' : index === 3 ? 'Atendida' : 'Activa') : index % 3 === 0 ? 'Cerrada' : 'Descartada'
-  const level = ([4, 4, 3, 3, 2, 1] as const)[index % 6]
+const alertMeasurements: Measurement[] = alertPlan.map(p => ({
+  id: p.index + 1,
+  sensorId: p.sensor.id,
+  zoneId: p.zone.id,
+  value: p.value,
+  unit: p.sensor.unit,
+  dateTime: atTime(p.date, p.minutes),
+  origin: p.manual ? 'Manual' : 'Automática',
+  exceeded: isExceeded(p.zone.id, p.sensor.type, p.value),
+}))
+
+// Mediciones normales: siempre antes de la 01:00, así la última lectura de un sensor en alerta es la que la disparó
+const normalMeasurements: Measurement[] = Array.from({ length: 38 }, (_, index) => {
+  const sensor = sensorById((index % 28) + 1)
+  const zone = zoneOfSensor(sensor.id)
+  const value = normalValue(sensor.type, index + 3)
   return {
-    id: index + 1,
-    sensorId,
+    id: 43 + index,
+    sensorId: sensor.id,
     zoneId: zone.id,
-    measurementId: index + 1,
-    level,
+    value,
+    unit: sensor.unit,
+    dateTime: atTime(`2026-10-${String(27 - Math.floor(index / 6)).padStart(2, '0')}`, 10 + (index % 40)),
+    origin: index % 7 === 0 ? 'Manual' : 'Automática',
+    exceeded: isExceeded(zone.id, sensor.type, value),
+  }
+})
+
+export const measurementsSeed: Measurement[] = [...alertMeasurements, ...normalMeasurements].sort((a, b) => b.dateTime.localeCompare(a.dateTime))
+
+// La última lectura de cada sensor es su medición más reciente
+for (const sensor of sensorsSeed) {
+  const last = measurementsSeed.find(m => m.sensorId === sensor.id)
+  if (last) sensor.lastValue = last.value
+}
+
+// Recorrido válido de estados (D13): Activa → En análisis → Atendida → Cerrada, o Activa → Descartada
+const statusPath: Record<AlertStatus, AlertStatus[]> = {
+  Activa: [],
+  'En análisis': ['En análisis'],
+  Atendida: ['En análisis', 'Atendida'],
+  Cerrada: ['En análisis', 'Atendida', 'Cerrada'],
+  Descartada: ['Descartada'],
+}
+const stepMinutes = [5, 25, 55]
+const stepNote: Record<AlertStatus, string> = {
+  Activa: '',
+  'En análisis': 'Se verifica la zona.',
+  Atendida: 'Se coordinó la intervención en el lugar.',
+  Cerrada: 'Los valores volvieron a la normalidad.',
+  Descartada: 'Evento no relevante.',
+}
+
+export const alertsSeed: Alert[] = alertPlan.map(p => {
+  const active = p.index < 5
+  const status: AlertStatus = active ? (p.index === 1 ? 'En análisis' : p.index === 3 ? 'Atendida' : 'Activa') : p.index % 3 === 0 ? 'Cerrada' : 'Descartada'
+  let previous: AlertStatus = 'Activa'
+  const changes: AlertChange[] = statusPath[status].map((to, step) => {
+    const change: AlertChange = { id: p.index * 10 + 2 + step, dateTime: atTime(p.date, p.minutes + stepMinutes[step]), from: previous, to, user: 'Lucía Fernández', observation: stepNote[to] }
+    previous = to
+    return change
+  })
+  return {
+    id: p.index + 1,
+    sensorId: p.sensor.id,
+    zoneId: p.zone.id,
+    measurementId: p.index + 1,
+    level: p.zone.risk,
     status,
-    dateTime: `2026-10-${String(27 - Math.floor(index / 8)).padStart(2, '0')}T01:${String(31 + (index % 12)).padStart(2, '0')}:00`,
-    description: `La medición superó el umbral configurado para ${zone.name}.`,
+    dateTime: atTime(p.date, p.minutes),
+    description: `La medición superó el umbral configurado para ${p.zone.name}.`,
     history: [
-      { id: index * 10 + 1, dateTime: '2026-10-27T01:31:00', to: 'Activa', user: 'Sistema', observation: 'Generada automáticamente por la medición.' },
-      ...(status !== 'Activa' ? [{ id: index * 10 + 2, dateTime: '2026-10-27T01:36:00', from: 'Activa' as const, to: status, user: 'Lucía Fernández', observation: status === 'Descartada' ? 'Evento no relevante.' : 'Se verificó la zona.' }] : []),
+      { id: p.index * 10 + 1, dateTime: atTime(p.date, p.minutes), to: 'Activa', user: 'Sistema', observation: p.manual ? 'Generada por una medición manual.' : 'Generada automáticamente por la medición.' },
+      ...changes,
     ],
   }
 })
