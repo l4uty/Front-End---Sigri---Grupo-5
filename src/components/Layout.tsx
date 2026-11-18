@@ -33,18 +33,34 @@ const titles: Record<PageKey, [string, string]> = {
 }
 
 export function AppLayout({ children }: { children: ReactNode }) {
-  const { currentUser, page, setPage, logout, alerts, notices, markNoticeRead, markAllNoticesRead, removeNotice, resetDemo } = useDemoStore()
+  const { currentUser, page, setPage, logout, alerts, notices, zones, sensors, refuges, markNoticeRead, markAllNoticesRead, removeNotice, resetDemo } = useDemoStore()
   const [drawer, setDrawer] = useState(false)
   const [shortcuts, setShortcuts] = useState(false)
   const [search, setSearch] = useState('')
+  const [searchOpen, setSearchOpen] = useState(false)
   const searchRef = useRef<HTMLInputElement>(null)
   const unread = notices.filter(n => !n.read).length
   const activeAlerts = alerts.filter(a => ['Activa', 'En análisis', 'Atendida'].includes(a.status)).length
   const visibleToasts = useMemo(() => notices.filter(n => !n.read && (n.persistent || n.id > 1_000_000_000_000)).slice(0, 3), [notices])
+  const searchResults = useMemo(() => {
+    const query = search.trim().toLocaleLowerCase('es')
+    if (query.length < 2) return []
+    return [
+      ...zones.filter(zone => `${zone.name} ${zone.description}`.toLocaleLowerCase('es').includes(query)).map(zone => ({ key: `zona-${zone.id}`, page: 'zonas' as PageKey, title: zone.name, detail: `Zona de riesgo · Nivel ${zone.risk}` })),
+      ...sensors.filter(sensor => `${sensor.code} ${sensor.type} ${sensor.status}`.toLocaleLowerCase('es').includes(query)).map(sensor => ({ key: `sensor-${sensor.id}`, page: 'sensores' as PageKey, title: sensor.code, detail: `${sensor.type} · ${sensor.status}` })),
+      ...refuges.filter(refuge => `${refuge.name} ${refuge.address} ${refuge.description}`.toLocaleLowerCase('es').includes(query)).map(refuge => ({ key: `refugio-${refuge.id}`, page: 'refugios' as PageKey, title: refuge.name, detail: `Refugio · ${refuge.address}` })),
+    ].slice(0, 8)
+  }, [search, zones, sensors, refuges])
+
+  const chooseSearchResult = (result: { page: PageKey }) => {
+    setPage(result.page)
+    setSearch('')
+    setSearchOpen(false)
+  }
 
   useEffect(() => {
     const handler = (event: KeyboardEvent) => {
-      if (event.ctrlKey && event.key.toLowerCase() === 'k') { event.preventDefault(); searchRef.current?.focus() }
+      if (event.ctrlKey && event.key.toLowerCase() === 'k') { event.preventDefault(); searchRef.current?.focus(); setSearchOpen(true) }
       if (event.altKey && ['1', '2', '3', '4'].includes(event.key)) { event.preventDefault(); setPage((['mapa', 'alertas', 'mediciones', 'resumen'] as PageKey[])[Number(event.key) - 1]) }
       if (event.altKey && event.key.toLowerCase() === 'n') { event.preventDefault(); setDrawer(true) }
       if (event.key === '?' && !(event.target instanceof HTMLInputElement) && !(event.target instanceof HTMLTextAreaElement)) setShortcuts(true)
@@ -64,7 +80,7 @@ export function AppLayout({ children }: { children: ReactNode }) {
       <div className="sidebar__footer"><div className="user-avatar">{currentUser?.name.split(' ').map(s => s[0]).slice(0, 2).join('')}</div><div><strong>{currentUser?.name}</strong><small>{roleLabel(currentUser?.role)}</small><button onClick={logout}>Cerrar sesión</button></div></div>
     </aside>
     <section className="workspace">
-      <header className="topbar"><div><h1>{titles[page][0]}</h1><p>{titles[page][1]}</p></div><div className="topbar__actions"><span className="live-indicator"><i /> Datos en vivo · 01:42</span><label className="global-search"><Search /><input ref={searchRef} value={search} onChange={e => setSearch(e.target.value)} placeholder="Buscar zona, sensor o refugio" aria-label="Buscar zona, sensor o refugio"/><kbd>Ctrl K</kbd></label><button className="icon-button notification-button" onClick={() => setDrawer(true)} aria-label={`${unread} notificaciones sin leer`}><Bell />{unread > 0 && <span>{unread}</span>}</button><button className="icon-button" onClick={() => setShortcuts(true)} aria-label="Ver atajos"><HelpCircle /></button></div></header>
+      <header className="topbar"><div><h1>{titles[page][0]}</h1><p>{titles[page][1]}</p></div><div className="topbar__actions"><span className="live-indicator"><i /> Datos en vivo · 01:42</span><div className="global-search-wrap" onFocus={() => setSearchOpen(true)} onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setSearchOpen(false) }}><label className="global-search"><Search /><input ref={searchRef} value={search} onChange={e => { setSearch(e.target.value); setSearchOpen(true) }} onKeyDown={event => { if (event.key === 'Enter' && searchResults[0]) chooseSearchResult(searchResults[0]); if (event.key === 'Escape') { setSearch(''); setSearchOpen(false) } }} placeholder="Buscar zona, sensor o refugio" aria-label="Buscar zona, sensor o refugio" aria-expanded={searchOpen && search.trim().length >= 2} aria-controls="global-search-results"/><kbd>Ctrl K</kbd></label>{searchOpen && search.trim().length >= 2 && <div className="global-search-results" id="global-search-results" role="listbox" aria-label="Resultados de búsqueda">{searchResults.length ? searchResults.map(result => <button key={result.key} role="option" aria-selected="false" onClick={() => chooseSearchResult(result)}><Search /><span><strong>{result.title}</strong><small>{result.detail}</small></span><em>Ver</em></button>) : <p>No encontramos zonas, sensores ni refugios.</p>}</div>}</div><button className="icon-button notification-button" onClick={() => setDrawer(true)} aria-label={`${unread} notificaciones sin leer`}><Bell />{unread > 0 && <span>{unread}</span>}</button><button className="icon-button" onClick={() => setShortcuts(true)} aria-label="Ver atajos"><HelpCircle /></button></div></header>
       <main id="main-content" tabIndex={-1}>{children}</main>
       <footer className="statusbar"><span><Gauge /> Simulación disponible</span><span><i className="sync-dot" /> Sincronización local</span><span>Alt+1 Mapa · Alt+2 Alertas · Ctrl+K Buscar · ? Atajos</span><button onClick={resetDemo}>Restablecer datos</button></footer>
     </section>
