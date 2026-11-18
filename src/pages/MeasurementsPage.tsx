@@ -1,0 +1,30 @@
+import { Pause, Play, Plus, RadioTower, SlidersHorizontal } from 'lucide-react'
+import { useMemo, useState } from 'react'
+import { Button, Field, Modal, StatusChip, Tabs } from '../components/UI'
+import { useDemoStore } from '../store/DemoStore'
+
+export function MeasurementsPage() {
+  const { currentUser, measurements, sensors, zones, thresholds, simulationRunning, setSimulationRunning, addMeasurement, addNotice } = useDemoStore()
+  const [tab, setTab] = useState('historial')
+  const [manualOpen, setManualOpen] = useState(false)
+  const [pauseOpen, setPauseOpen] = useState(false)
+  const [sensorId, setSensorId] = useState(sensors[14]?.id ?? sensors[0].id)
+  const [value, setValue] = useState('41')
+  const [zoneFilter, setZoneFilter] = useState('')
+  const [sensorFilter, setSensorFilter] = useState('')
+  const admin = currentUser?.role === 'ADMINISTRADOR'
+  const filtered = useMemo(() => measurements.filter(m => (!zoneFilter || m.zoneId === Number(zoneFilter)) && (!sensorFilter || m.sensorId === Number(sensorFilter))).slice(0, 35), [measurements, zoneFilter, sensorFilter])
+  const sensor = sensors.find(s => s.id === sensorId)!
+  const zone = zones.find(z => z.sensorIds.includes(sensorId)) ?? zones[0]
+  const threshold = thresholds.find(t => t.zoneId === zone.id && t.sensorType === sensor.type)
+  const numericValue = Number(value)
+  const exceeded = Boolean((threshold?.max !== undefined && numericValue > threshold.max) || (threshold?.min !== undefined && numericValue < threshold.min))
+  const register = () => { if (!Number.isFinite(numericValue)) return; addMeasurement(sensorId, numericValue); setManualOpen(false) }
+  return <div className="page page--stack">
+    <div className="measurement-top"><section className="content-card simulation-card"><header><div><p className="eyebrow">SOLO ADMINISTRADOR</p><h2>Simulación automática</h2></div><StatusChip tone={simulationRunning ? 'success' : 'warning'}>{simulationRunning ? '● En ejecución' : 'Ⅱ En pausa'}</StatusChip></header><p>Genera lecturas periódicas para los 38 sensores activos y evalúa sus umbrales.</p><div className="simulation-meta"><span>Última ejecución <strong>01:42</strong></span><span>Próxima <strong>{simulationRunning ? '01:47' : '—'}</strong></span></div>{admin && <Button variant={simulationRunning ? 'danger' : 'primary'} onClick={() => simulationRunning ? setPauseOpen(true) : (setSimulationRunning(true), addNotice({ type: 'success', title: 'Simulación reanudada', message: 'Los sensores activos vuelven a generar mediciones.' }))}>{simulationRunning ? <><Pause /> Pausar simulación</> : <><Play /> Reanudar simulación</>}</Button>}</section><section className="content-card manual-card"><div><p className="eyebrow">PRUEBA DE ESCENARIOS</p><h2>Carga manual</h2><p>Registra una lectura y la evalúa inmediatamente.</p></div>{admin ? <Button onClick={() => setManualOpen(true)}><Plus /> Cargar medición manual</Button> : <StatusChip tone="neutral">Solo consulta</StatusChip>}</section></div>
+    <section className="content-card history-card"><div className="page-tools"><Tabs items={[{ key: 'historial', label: 'Historial', count: measurements.length }, { key: 'sensor', label: 'Últimas por sensor' }]} active={tab} onChange={setTab}/><div className="filter-bar filter-bar--compact"><SlidersHorizontal /><select value={zoneFilter} onChange={e => setZoneFilter(e.target.value)}><option value="">Todas las zonas</option>{zones.map(z => <option key={z.id} value={z.id}>{z.name}</option>)}</select><select value={sensorFilter} onChange={e => setSensorFilter(e.target.value)}><option value="">Todos los sensores</option>{sensors.slice(0, 20).map(s => <option key={s.id} value={s.id}>{s.code}</option>)}</select><input type="date" defaultValue="2026-10-20"/><input type="date" defaultValue="2026-10-27"/></div></div><div className="data-table measurements-table"><div className="data-table__head"><span>Fecha y hora</span><span>Sensor / zona</span><span>Valor</span><span>Origen</span><span>Resultado</span></div>{filtered.map(m => { const s = sensors.find(x => x.id === m.sensorId)!; const z = zones.find(x => x.id === m.zoneId)!; return <div className="data-row" key={m.id}><span>{new Date(m.dateTime).toLocaleString('es-AR')}</span><span><strong>{s.code}</strong><small>{z.name}</small></span><span>{m.value} {m.unit}</span><span><StatusChip tone="info">{m.origin}</StatusChip></span><span><StatusChip tone={m.exceeded ? 'danger' : 'success'}>{m.exceeded ? 'Superó el umbral' : 'Dentro del umbral'}</StatusChip></span></div>})}</div></section>
+
+    {manualOpen && <Modal title="Cargar medición manual" onClose={() => setManualOpen(false)} footer={<><Button variant="secondary" onClick={() => setManualOpen(false)}>Cancelar</Button><Button onClick={register}>Registrar medición</Button></>}><Field label="Sensor" required><select value={sensorId} onChange={e => setSensorId(Number(e.target.value))}>{sensors.filter(s => s.status === 'Activo').map(s => <option key={s.id} value={s.id}>{s.code} · {s.type}</option>)}</select></Field><Field label={`Valor (${sensor.unit})`} required><input type="number" step="0.01" value={value} onChange={e => setValue(e.target.value)} /></Field><div className={`evaluation-box ${exceeded ? 'evaluation-box--danger' : 'evaluation-box--success'}`}><RadioTower /><div><strong>{exceeded ? 'La medición supera el umbral' : 'La medición está dentro del umbral'}</strong><p>{zone.name} · mínimo {threshold?.min ?? 'sin definir'} · máximo {threshold?.max ?? 'sin definir'} {threshold?.unit}</p></div></div></Modal>}
+    {pauseOpen && <Modal destructive title="¿Pausar la simulación automática?" onClose={() => setPauseOpen(false)} footer={<><Button variant="secondary" onClick={() => setPauseOpen(false)}>Cancelar</Button><Button variant="danger" onClick={() => { setSimulationRunning(false); setPauseOpen(false); addNotice({ type: 'warning', title: 'Simulación en pausa', message: 'Los 38 sensores activos no generan nuevas mediciones.', actionLabel: 'Reanudar' }) }}>Pausar simulación</Button></>}><p>En pausa, los 38 sensores activos no generan mediciones y el sistema no detecta riesgos nuevos.</p></Modal>}
+  </div>
+}
